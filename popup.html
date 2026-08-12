@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>External Jump Blocker</title>
+<style>
+  * { box-sizing: border-box; }
+  body { width: 320px; margin: 0; padding: 14px; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; background: #1f2430; color: #e6e8eb; }
+  h1 { font-size: 14px; margin: 0 0 6px; font-weight: 600; }
+  .site { font-family: Consolas, Menlo, monospace; font-size: 12px; color: #9bd0ff; word-break: break-all;
+          padding: 8px 10px; background: #161a22; border-radius: 8px; margin-bottom: 10px; }
+  .status { font-size: 12px; margin-bottom: 10px; color: #b8c0cc; }
+  .status.on { color: #ffb4b4; }
+  .btn { width: 100%; padding: 9px 8px; border: 0; border-radius: 8px; cursor: pointer;
+         font-size: 13px; font-family: inherit; background: #2f6fed; color: #fff; transition: background .12s; }
+  .btn:hover { background: #3f7df0; }
+  .btn.remove { background: #3a1f24; color: #ffb4b4; }
+  .btn.remove:hover { background: #4a262d; }
+  .muted { margin-top: 10px; font-size: 11px; color: #8a91a0; }
+  a { color: #9bd0ff; }
+</style>
+</head>
+<body>
+  <h1>External Jump Blocker</h1>
+  <div class="site" id="site">Loading…</div>
+  <div class="status" id="status"></div>
+  <button class="btn" id="toggle">Add to blacklist</button>
+  <div class="muted">Click the button above to add/remove the current site in the blacklist (matched by domain).<br>
+    Full management and the permanent allow list are in the <a href="#" id="opts">options page</a>.</div>
+<script src="popup.js"></script>
+</body>
+</html>
