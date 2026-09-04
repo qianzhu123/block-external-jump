@@ -52,6 +52,10 @@
     }
   } );
 
+  // Bridge install marker — fires once content.js is ready to handle REQs.
+  // inject.js awaits this before relying on ENABLED/POPUP replies.
+  window.dispatchEvent( new CustomEvent( "__bej_bridge_ready__" ) );
+
   // ---------------- Popup UI ----------------
   // Shadow DOM avoids page style pollution; container pinned bottom-right.
   const HOST_ID = "__bej_popup_host__";

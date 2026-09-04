@@ -58,6 +58,74 @@
     return ( r && r.action ) || "confirm";
   }
 
+  // Page-mode cache: hit/miss for "current page URL is in blacklist" with a TTL.
+  // Avoids the chicken-and-egg: hijack is installed synchronously at document_start,
+  // but the background check needs at least one round-trip. If we install the hijack
+  // unconditionally, we have to swallow the very first navigation if the bridge isn't
+  // ready yet — which is exactly the bug the user hit. Cache says: if we don't know
+  // yet, just allow (no interception). Once the first reply lands we know the truth
+  // and behave correctly from then on. First visit to a blacklisted page may slip
+  // through once; the user can refresh to re-evaluate.
+  let enabledCache = null;          // null = unknown, true = in blacklist, false = not
+  let enabledCacheAt = 0;
+  const CACHE_TTL_MS = 30 * 1000;
+
+  function noteEnabled( v, url ) {
+    enabledCache = !!v;
+    enabledCacheAt = Date.now();
+    enabledCacheUrl = url || location.href;
+  }
+  let enabledCacheUrl = "";
+
+  async function isEnabledCached() {
+    const now = Date.now();
+    if (
+      enabledCache !== null &&
+      enabledCacheUrl === location.href &&
+      ( now - enabledCacheAt ) < CACHE_TTL_MS
+    ) return enabledCache;
+    const r = await ask( "ENABLED", { pageUrl: location.href } );
+    const v = !!( r && r.enabled === true );
+    noteEnabled( v, location.href );
+    return v;
+  }
+
+  // Listen for blacklist changes pushed by background so cache stays in sync across tabs.
+  window.addEventListener( "__bej_blacklist_changed__", ( e ) => {
+    const d = e.detail || {};
+    if ( d && typeof d.pageUrl === "string" && d.pageUrl === location.href ) {
+      noteEnabled( !!d.enabled, location.href );
+    }
+  } );
+
+  // Wait for the content-script bridge to install before priming. Without this,
+  // a fast page may dispatch REQ before content.js has attached its listener,
+  // the ask() will time out after 1500 ms, and we leave enabledCache=null —
+  // which keeps the hijack on its "fast-path: allow native" branch, which is
+  // exactly what we want. The bridge_ready handshake makes the priming
+  // predictable in the common case (we get an answer within milliseconds).
+  function whenBridgeReady( timeoutMs ) {
+    return new Promise( ( resolve ) => {
+      let done = false;
+      const finish = () => { if ( done ) return; done = true; resolve( true ); };
+      window.addEventListener( "__bej_bridge_ready__", finish, { once: true } );
+      setTimeout( () => { if ( !done ) { done = true; resolve( false ); } }, timeoutMs || 200 );
+    } );
+  }
+
+  ( async () => {
+    await whenBridgeReady();
+    try { await isEnabledCached(); } catch {}
+  } )();
+
+  // Periodic re-check while the page is alive: if a blacklisted page was opened
+  // before its rule was added, the first nav will be allowed; re-check on a timer
+  // so subsequent navs are intercepted.
+  setInterval( () => {
+    if ( document.visibilityState !== "visible" ) return;
+    isEnabledCached().catch( () => {} );
+  }, 5 * 1000 );
+
   function regDomain( urlStr ) {
     try {
       const u = new URL( urlStr );
@@ -94,7 +162,11 @@
     try {
       if ( !isExternal( toUrl ) ) return "allow";
       if ( passToken.has( normUrl( toUrl ) ) ) return "allow";
-      if ( !( await isEnabled() ) ) return "allow";
+      // Same-site nav never needs the popup; even when enabled, allow silently.
+      // (isExternal already returned true here, so this is a fast-path for "current
+      // page not in blacklist → allow" so we never fire the popup for non-blacklisted
+      // sites.)
+      if ( !( await isEnabledCached() ) ) return "allow";
       const fromDomain = regDomain( location.href );
       const toDomain = regDomain( toUrl );
       if ( await isException( fromDomain, toDomain ) ) return "allow";
@@ -130,6 +202,21 @@
       enumerable: true,
       get() { return hrefDesc.get.call( this ); },
       set( url ) {
+        // Fast-path: if we don't yet know whether this page is blacklisted (very
+        // first gate on a freshly-loaded page), fall back to the native setter
+        // synchronously. The background check will land within a few ms; from
+        // then on, gates will block. Without this, the very first
+        // `location.href = ...` after document_start can fire while the
+        // content-script bridge hasn't installed its CustomEvent listener yet,
+        // the request times out, and the navigation silently dies.
+        if ( enabledCache === null ) {
+          hrefDesc.set.call( window.location, url );
+          return;
+        }
+        if ( !enabledCache ) {
+          hrefDesc.set.call( window.location, url );
+          return;
+        }
         gateJump( url ).then( ( v ) => {
           if ( v === "allow" ) savedAssign( url );
         } );
@@ -137,12 +224,21 @@
     } );
   }
   window.location.assign = function ( url ) {
+    if ( enabledCache === null || !enabledCache ) {
+      return savedAssign( url );
+    }
     gateJump( url ).then( ( v ) => { if ( v === "allow" ) savedAssign( url ); } );
   };
   window.location.replace = function ( url ) {
+    if ( enabledCache === null || !enabledCache ) {
+      return savedReplace( url );
+    }
     gateJump( url ).then( ( v ) => { if ( v === "allow" ) savedReplace( url ); } );
   };
   window.open = function ( url, ...rest ) {
+    if ( enabledCache === null || !enabledCache ) {
+      return savedOpen.call( window, url, ...rest );
+    }
     gateJump( url ).then( ( v ) => {
       if ( v === "allow" ) {
         try { savedOpen.call( window, url, ...rest ); } catch ( e ) {}
@@ -158,6 +254,8 @@
     if ( !el || !el.href ) return;
     const href = el.href;
     if ( !isExternal( href ) ) return;
+    // Fast-path: not blacklisted → don't even preventDefault. Native click wins.
+    if ( enabledCache === null || !enabledCache ) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     const newTab = el.target && el.target !== "" && el.target !== "_self";
@@ -177,6 +275,7 @@
     if ( !form || !form.action ) return;
     const action = form.action;
     if ( !isExternal( action ) ) return;
+    if ( enabledCache === null || !enabledCache ) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     gateJump( action ).then( ( v ) => {
@@ -191,6 +290,7 @@
   };
 
   function stripMetaRefresh() {
+    if ( enabledCache === null || !enabledCache ) return;
     document.querySelectorAll( 'meta[http-equiv="refresh" i]' ).forEach( ( m ) => {
       const c = m.getAttribute( "content" ) || "";
       const low = c.toLowerCase();
